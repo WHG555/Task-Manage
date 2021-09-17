@@ -1,8 +1,14 @@
 // 导入库
+import { MarkdownDocument } from 'markdown';
+import moment from "moment";
+import { JsonObjectExpression } from 'typescript';
 import { 
 App, 
 Modal, 
+Vault,
+TFile,
 Notice, 
+TAbstractFile,
 Plugin, 
 PluginManifest,
 PluginSettingTab, 
@@ -11,8 +17,6 @@ ItemView, View,
 Workspace,
 WorkspaceLeaf,
 } from 'obsidian';
-// import TaskManageList from "./components/TaskManageList.svelte";
-
 
 
 const VIEW_TYPE = "task-list";
@@ -32,11 +36,15 @@ const DEFAULT_SETTINGS: TaskManageSettings = {
 export default class TaskManagePlugin extends Plugin {
 	settings: TaskManageSettings;
 	private viewProxy: TaskManageListItemViewProxy;
+	private taskmanagelist : TaskManageList;
+	private taskmanagecontrol: TaskManageController;
 
 	constructor(app: App, manifest: PluginManifest) {
 		super(app, manifest);
 		// const leaf = this.app.workspace.get
-		this.viewProxy = new TaskManageListItemViewProxy(app.workspace)
+		this.taskmanagelist = new TaskManageList();
+		this.viewProxy = new TaskManageListItemViewProxy(app.workspace);
+		this.taskmanagecontrol = new TaskManageController(app.vault, this.viewProxy);
 	}
 
 	async onload() { // 插件重载
@@ -78,6 +86,10 @@ export default class TaskManagePlugin extends Plugin {
 				if (!checking) {
 				  this.showReminderList();
 				}
+				console.log(this.app.workspace.getRightLeaf(false))
+				console.log(this.app.workspace.getLeftLeaf(false))
+				console.log(this.app.workspace.getUnpinnedLeaf(VIEW_TYPE))
+				console.log(this.app.workspace.getLeaf(false))  // 文本编辑区
 				return true;
 			},
 		});
@@ -92,25 +104,31 @@ export default class TaskManagePlugin extends Plugin {
 		});
 
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {  // 注册点击事件
-			console.log('click', evt);
+			// console.log('click', evt);
 		});
 
 		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000)); // 设置时间间隔  定时任务
 		
 		
 		// this.registerView("债务列表", (leaf : WorkspaceLeaf) => {return new TaskManageListItemView(leaf);})
-		this.registerView("task-list", (leaf: WorkspaceLeaf) => {
-			return this.viewProxy.createView(leaf);
+		this.registerView(VIEW_TYPE, (leaf: WorkspaceLeaf) => {
+			return this.viewProxy.createView(this.taskmanagelist, leaf);
 		  });
-		
+
+		// this.app.workspace.getRightLeaf(false).setViewState({
+			// type: VIEW_TYPE,
+		//   });
+
 
 		// 界面---打开通知界面
 		if (this.app.workspace.layoutReady) {
+			console.log("view", "115")
 			this.viewProxy.openView();
 		} else {
 			(this.app.workspace as any).on("layout-ready", () => {
 				this.viewProxy.openView();
 			});
+			console.log("view", "122")
 		}
 
 		this.watchVault();
@@ -118,15 +136,30 @@ export default class TaskManagePlugin extends Plugin {
 	
 	// 通知---文件更改通知
 	private watchVault() {
-		console.log("file change")	
+		[
+			this.app.vault.on("modify", async (file) => {
+			  this.taskmanagecontrol.reloadFile(file, true);
+			}),
+			this.app.vault.on("delete", (file) => {
+			  this.taskmanagecontrol.removeFile(file.path);
+			}),
+			this.app.vault.on("rename", (file, oldPath) => {
+			  this.taskmanagecontrol.removeFile(oldPath);
+			  this.taskmanagecontrol.reloadFile(file);
+			}),
+		  ].forEach(eventRef => {
+			this.registerEvent(eventRef);
+		  })
 	}
 
 	showReminderList(): void {
-		if (this.app.workspace.getLeavesOfType("taskmanage").length) {
+		if (this.app.workspace.getLeavesOfType(VIEW_TYPE).length) {
+			console.log("view", "145")
 		  return;
 		}
+		console.log("view", "148")
 		this.app.workspace.getRightLeaf(false).setViewState({
-		  type: "taskmanage",
+		  type: VIEW_TYPE,
 		});
 	}
 
@@ -157,7 +190,7 @@ class TaskManageModal extends Modal {
 		let {contentEl} = this;
 		
 		this.app.workspace.getRightLeaf(true).setViewState({
-			type: 'my-view-type',
+			type: VIEW_TYPE,
 		  });
 		contentEl.setText('Woah888!'); // 出来的一个窗口
 		console.log("www--:", this.containerEl)
@@ -206,25 +239,179 @@ class TaskManageSettingTab extends PluginSettingTab {
 	}
 }
 
+// 控制器模型
+class TaskManageController{
+	taskmanageview: TaskManageListItemViewProxy
+	constructor(private vault: Vault, taskview: TaskManageListItemViewProxy) {
+		this.taskmanageview = taskview
+	 }
 
+	async reloadFile(file: TAbstractFile, reloadUI: boolean = false) {
+		console.log("reload file: path=%s");
+		if (!(file instanceof TFile)) {
+			console.debug("Cannot read file other than TFile: file=%o", file);
+			return;
+		  }
+		  if (!this.isMarkdownFile(file)) {
+			console.debug("Not a markdown file: file=%o", file);
+			return;
+		  }
+		const content = new Content(file.path, await this.vault.cachedRead(file));
+		content.getTaskManage()
+
+		// 界面更新
+		this.taskmanageview.reload()
+		return content
+	}
+	async removeFile(path: string) {
+		console.log("Remove file: path=%s", path);
+	}
+	async openFile(path: string) {
+		console.log("open file: path=%s", path);
+	}
+
+	private isMarkdownFile(file: TFile) {
+		return file.extension.toLowerCase() === "md";
+	  }
+
+}
+
+// 开始时间: 2021-09-08
+// 结束时间: 2021-10-08
+// 重复间隔: 每天  每周一二三
+// 完成记录:
+// 进度: 3%
+// 完成开始时间: 2021-09-08 16:24
+// 完成结束时间: 2021-09-08 18:23
+// 花费时间: 
+// 任务备注: 开发ob的任务提醒插件 
+// {
+// 	"starttime": "2021-9-11 23:50",
+// 	"endtime": "2021-9-11 23:50",
+// 	"reparttime": "everyday",
+// 	"progress": 2,
+// 	"completerecord": [
+// 	  {
+// 		"start": "2021-9-11 23:56",
+// 		"end": "2021-9-11 23:57"
+// 	  },
+// 	  {
+// 		"start": "2021-9-11 23:56",
+// 		"end": "2021-9-11 23:57"
+// 	  }
+// 	],
+// 	"totaltime": "12.5",
+// 	"note": "hello"
+//   }
+class Task {
+	starttime: string
+	endtime: string
+	reparttime: string
+	progress: number
+	completerecord: []
+	totaltime: string  // 总计时间
+	note: string 	// 备注
+
+
+
+}
+
+class TaskParse {
+	regexp : RegExp
+
+	constructor() {
+		this.regexp = new RegExp("(?<=##).*?(?=##)");
+	 }
+
+
+	public parse(data: string) {
+		const result = this.regexp.exec(data)
+		
+		if (result) {
+			console.log("pause", result.length)
+			var sjson = JSON.parse(result[0])
+			console.log(sjson)
+		}
+		
+
+		return result
+	}
+}
+
+
+class DateTime {
+	now() {
+		return moment().format('YYYY-MM-DD HH:mm:ss');
+		// console.log(now)
+	}
+}
+
+// 读取md文件的内容
+class Content {
+	private doc: MarkdownDocument;
+	private taskparse: TaskParse;
+	private tasklist: Array<string>;
+
+	constructor(file: string, content: string) {
+		this.doc = new MarkdownDocument(file, content);
+		this.taskparse = new TaskParse();
+	}
+
+	public getTaskManage(){
+		this.doc.getTodos().forEach(todo => {
+			if (todo.checked) {
+				return;
+			}
+			// 解析任务的字符串 --flag--
+			// const parsed = parseReminder(this.doc.file, todo.lineIndex, todo.body);
+			console.log("getTaskManage", todo.lineIndex, todo.checked, todo.body);
+			var date = this.taskparse.parse(todo.body)
+			
+			console.log(date)
+		})
+	}
+
+}
+
+class TaskManageList {
+	tasklist : Array<string>
+
+	constructor() {
+		this.tasklist = []
+	}
+
+	setlist() {
+
+	}
+
+	addlist (task: string) {
+		this.tasklist.push(task)
+	}
+
+	getlist () {
+
+	}
+
+}
 
 // 任务列表显示窗口
 class TaskManageListItemView extends ItemView {
-	// private view: TaskManageList;
+	private view: TaskManageList;
 
 	constructor(
+		tasklist : TaskManageList,
 		leaf: WorkspaceLeaf,
 	) {
 	super(leaf);
-
+		this.view = tasklist;
 	}
 	
 
 	getViewType(): string {
-		return "任务列表";
+		return VIEW_TYPE;
 	}
 	getDisplayText(): string {
-		return "Smile";
+		return VIEW_TYPE;
 	}
 	getIcon(): string {
 		return "clock";
@@ -237,12 +424,22 @@ class TaskManageListItemView extends ItemView {
 
 	reload() {
 		console.log("reminder", "67", "listview reload")
-		this.contentEl.appendText("hello reload")
+		// this.contentEl.appendText("hello reload\r\n")
+		// this.containerEl.appendText("tain e1 \n")
+		// this.containerEl.appendChild
+		this.contentEl.setText("<main><div>   4543 </div></main>")
+		// this.contentEl
 	}
 
 	onClose(): Promise<void> {
 		console.log("reminder", "67", "listview close")
 		return 
+	}
+
+	setText() {
+		// this.contentEl.setText("")
+		this.contentEl.appendText("1111")
+		this.contentEl.appendText("222")
 	}
 }
 
@@ -251,8 +448,9 @@ class TaskManageListItemViewProxy {
 		private workspace: Workspace
 	  ) { }
 
-	createView(leaf: WorkspaceLeaf): View {
+	createView(tasklist:TaskManageList, leaf: WorkspaceLeaf): View {
 		return new TaskManageListItemView(
+			tasklist,
 			leaf
 		);
 	}
@@ -260,8 +458,10 @@ class TaskManageListItemViewProxy {
 	openView(): void {
 		if (this.workspace.getLeavesOfType(VIEW_TYPE).length) {
 		  // reminder list view is already in workspace
+		//   console.log(this.workspace.getLeavesOfType(VIEW_TYPE))
 		  return;
 		}
+		
 		// Create new view
 		this.workspace.getRightLeaf(false).setViewState({
 		  type: VIEW_TYPE,
@@ -270,12 +470,16 @@ class TaskManageListItemViewProxy {
 
 	reload(force: boolean = false) {
 		const views = this.getViews();
+		views.forEach(view => view.reload())
+		console.log("TaskManageListItemViewProxy", views)
+		// console.log(this.workspace.getRightLeaf(false))
 	}
 	private getViews() {
 		return this.workspace
-		  .getLeavesOfType("task-list")
+		  .getLeavesOfType(VIEW_TYPE)
 		  .map(leaf => leaf.view as TaskManageListItemView);
-	  }
+	}
+
 }
 
 
